@@ -1,0 +1,196 @@
+# =============================================================================
+# Claude Code / local IDE state — nunca deve ir pro repo
+# =============================================================================
+.claude/
+.claude-code/
+CLAUDE.local.md
+
+# =============================================================================
+# Segredos / credenciais — NUNCA commitar
+# =============================================================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials
+credentials.json
+.aws/
+.aws-credentials
+.secrets/
+secrets.yml
+secrets.yaml
+secrets.json
+*.kubeconfig
+
+# =============================================================================
+# Terraform (estado, caches, backend preenchido, lock, plan outputs)
+# =============================================================================
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.info
+
+# backend.hcl preenchido por stack contem nome de bucket + tabela especificos
+# da conta. Regerar com write-backend-hcl.sh. O exemplo continua versionado.
+**/backend.hcl
+!**/backend.hcl.example
+
+# tfvars podem conter dados sensiveis; versione apenas .tfvars.example
+*.tfvars
+*.auto.tfvars
+!*.tfvars.example
+
+# plan outputs (costumam vazar dados)
+*.tfplan
+*.tfplan.json
+tfplan
+plan.out
+
+# State LOCAL da stack 00-backend (bootstrap) — ela usa local backend,
+# entao o arquivo existe. Guarde esse state em local seguro, NAO no repo.
+efs-api-project/terraform/00-backend/terraform.tfstate
+efs-api-project/terraform/00-backend/terraform.tfstate.backup
+
+# Terraform crash reports
+crash.log
+crash.*.log
+
+# =============================================================================
+# Python — caches, venvs, builds
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+develop-eggs/
+.installed.cfg
+pip-log.txt
+pip-delete-this-directory.txt
+
+# venvs
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# linters/formatadores
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+.dmypy.json
+dmypy.json
+
+# =============================================================================
+# Docker / build artifacts
+# =============================================================================
+*.tar
+*.tar.gz
+docker-compose.override.yml
+
+# =============================================================================
+# Node (caso algum helper JS apareca)
+# =============================================================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json.bak
+.pnpm-store/
+
+# =============================================================================
+# IDEs / editores
+# =============================================================================
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.iml
+*.ipr
+*.iws
+*.sublime-project
+*.sublime-workspace
+.fleet/
+.zed/
+
+# =============================================================================
+# macOS / Windows / Linux — lixo de OS
+# =============================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# =============================================================================
+# Logs diversos gerados por scripts do projeto
+# =============================================================================
+*.log
+!populator/run_on_instance.sh   # script, não log
+logs/
+*.log.gz
+
+# =============================================================================
+# Reports gerados (generate_report.py) — sao output de execucao
+# =============================================================================
+efs-api-project/report/report-*.html
+efs-api-project/report/report-*.raw.json
+efs-api-project/report/*.csv
+
+# =============================================================================
+# Diagramas — gerados / backup / exports
+# =============================================================================
+efs-api-project/diagrams/*.drawio.bak
+efs-api-project/diagrams/*.png
+efs-api-project/diagrams/*.svg
+efs-api-project/diagrams/*.pdf
+efs-api-project/diagrams/.drawio-backup/
+
+# =============================================================================
+# Temporarios / backups
+# =============================================================================
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+*.rej
+.tmp/
+tmp/
+
+# =============================================================================
+# CI / test outputs
+# =============================================================================
+.test-results/
+junit.xml
+report.xml
+.checkov.baseline
+.tflint.d/
+
+# =============================================================================
+# delete-vpc.sh gera logs quando roda
+# =============================================================================
+/delete-vpc-*.log

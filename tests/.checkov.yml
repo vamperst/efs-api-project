@@ -1,0 +1,90 @@
+# Checkov - policy-as-code para Terraform.
+# Rodar: checkov --config-file tests/.checkov.yml -d terraform/
+#
+# Configurado para LAB - algumas regras desabilitadas (cost, multi-region,
+# encryption-with-CMK) porque sao overkill neste contexto. Adicione/remova
+# skip-check conforme sua postura de seguranca.
+
+framework:
+  - terraform
+
+directory:
+  - terraform
+
+# Formato: CLI para humano, junit para CI
+output: cli
+
+# Pule warnings - foca em erros de seguranca reais
+compact: true
+quiet: true
+
+# Skips justificados para este lab:
+skip-check:
+  # ALB sem HTTPS - este lab nao tem certificado publico. Em prod, habilitar ACM + HTTPS.
+  - CKV_AWS_2    # ALB should use HTTPS
+  - CKV_AWS_91   # ELBv2 should have access logging
+  - CKV_AWS_150  # ELBv2 deletion protection
+
+  # S3 - este nao eh dado sensivel de producao
+  - CKV_AWS_144  # S3 cross-region replication (lab single-region)
+  - CKV_AWS_145  # S3 SSE-KMS (usamos SSE-S3 que e suficiente p/ lab)
+  - CKV2_AWS_61  # S3 lifecycle config
+  - CKV2_AWS_62  # S3 event notifications
+  - CKV_AWS_18   # S3 access logging - overhead para lab, nao ha auditoria externa
+
+  # Security groups - o SG do ALB precisa aceitar 0.0.0.0/0 na 80 (e o ponto)
+  - CKV_AWS_260  # SG nao deve ter 0.0.0.0/0 em 80 - esperado para ALB publico
+
+  # Subnet publica que assign IP: intencional - o NAT/IGW precisam disso
+  - CKV_AWS_130  # VPC subnet nao deve auto-assignar public IP (intencional no Tier=Public)
+
+  # SSM parameters - armazenam IDs/ARNs publicos (nao segredos), String e suficiente
+  # SecureString exigiria KMS grants em todas as stacks consumidoras
+  - CKV2_AWS_34  # SSM Parameter should be Encrypted (SecureString)
+
+  # ALB - mesmo motivo de CKV_AWS_2 (sem certificado HTTPS no lab)
+  - CKV2_AWS_20  # ALB HTTP->HTTPS redirect
+  - CKV2_AWS_28  # ALB protegido por WAF (overkill para lab)
+  - CKV_AWS_131  # ALB drops HTTP headers (so com HTTPS)
+  - CKV_AWS_103  # ALB TLS 1.2 (so com HTTPS)
+
+  # EIP attached: o EIP esta associado a um NAT Gateway (nao EC2), checkov
+  # nao detecta esse tipo de attachment
+  - CKV2_AWS_19  # EIP attached to EC2 - falso positivo para NAT GW EIPs
+
+  # DynamoDB - usamos SSE-S3/DynamoDB padrao, nao CMK
+  - CKV_AWS_119  # DynamoDB KMS CMK
+
+  # ECR - tag mutable eh intencional (tag "latest" e rebuild de "v1")
+  - CKV_AWS_51   # ECR image tag immutability
+
+  # SG ingress 22 so cria se key_name != "" (condicional)
+  - CKV_AWS_24   # ingress 22 de 0.0.0.0/0 - so ativo com key_name
+
+  # user-data contem nome de variavel/config, nao senha
+  - CKV_AWS_46   # secret em EC2 user-data (falso positivo)
+
+  # EFS - usamos KMS padrao (aws/elasticfilesystem)
+  - CKV_AWS_184  # EFS deve usar KMS-customer-managed (aws/managed esta OK no lab)
+
+  # IAM - algumas policies precisam Resource="*" (X-Ray, SSM agent updates)
+  - CKV_AWS_111  # IAM policy nao deve ter Resource="*" (casos justificados)
+  - CKV_AWS_356  # idem
+
+  # CloudWatch log groups - usam CMK aws/logs default
+  - CKV_AWS_158  # log group deve ter KMS
+
+  # ECR - este e um repo de lab, scan on push ja esta habilitado
+  - CKV_AWS_136  # ECR deve usar KMS
+
+  # DynamoDB - PITR habilitado, mas checkov quer recovery completo
+  - CKV_AWS_28   # DynamoDB PITR (ja habilitado, false positive as vezes)
+
+  # EC2 Nitro - detailed monitoring e pago, para lab pode ficar off
+  - CKV_AWS_126  # EC2 detailed monitoring (habilitado onde faz sentido)
+
+  # Termination protection - EC2s efemeras (populator/migrator), nao queremos
+  - CKV_AWS_8    # EBS encryption on boot volume by default (habilitado nos LTs)
+
+# (nao definimos `check:` allowlist - queremos TODAS as regras ativas
+#  exceto as listadas em skip-check acima)

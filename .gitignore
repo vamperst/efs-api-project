@@ -52,8 +52,8 @@ plan.out
 
 # State LOCAL da stack 00-backend (bootstrap) — ela usa local backend,
 # entao o arquivo existe. Guarde esse state em local seguro, NAO no repo.
-efs-api-project/terraform/00-backend/terraform.tfstate
-efs-api-project/terraform/00-backend/terraform.tfstate.backup
+terraform/00-backend/terraform.tfstate
+terraform/00-backend/terraform.tfstate.backup
 
 # Terraform crash reports
 crash.log
@@ -156,18 +156,18 @@ logs/
 # =============================================================================
 # Reports gerados (generate_report.py) — sao output de execucao
 # =============================================================================
-efs-api-project/report/report-*.html
-efs-api-project/report/report-*.raw.json
-efs-api-project/report/*.csv
+report/report-*.html
+report/report-*.raw.json
+report/*.csv
 
 # =============================================================================
 # Diagramas — gerados / backup / exports
 # =============================================================================
-efs-api-project/diagrams/*.drawio.bak
-efs-api-project/diagrams/*.png
-efs-api-project/diagrams/*.svg
-efs-api-project/diagrams/*.pdf
-efs-api-project/diagrams/.drawio-backup/
+diagrams/*.drawio.bak
+diagrams/*.png
+diagrams/*.svg
+diagrams/*.pdf
+diagrams/.drawio-backup/
 
 # =============================================================================
 # Temporarios / backups

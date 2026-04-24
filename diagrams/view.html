@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>EFS → S3 · Arquiteturas (3 Fases)</title>
+<style>
+  html,body { margin:0; padding:0; font-family: -apple-system, "Segoe UI", sans-serif; background:#fafafa; }
+  header { padding: 12px 20px; background:#232F3E; color:#fff; display:flex; align-items:center; gap:20px; }
+  header h1 { margin:0; font-size:16px; font-weight:600; }
+  header a { color:#81D4FA; text-decoration:none; font-size:13px; }
+  header .tag { background:#ED7100; color:#fff; font-size:11px; padding:2px 8px; border-radius:4px; }
+  .wrap { padding: 16px 20px; }
+  .mxgraph { max-width: 100%; border: 1px solid #ddd; background: #fff; }
+  .legend { font-size: 13px; color:#555; margin: 8px 0 20px; }
+  .legend code { background:#eee; padding:1px 6px; border-radius:3px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>EFS → S3 · Arquiteturas em 3 fases</h1>
+  <span class="tag">5 páginas</span>
+  <a href="https://app.diagrams.net/" target="_blank">abrir no draw.io</a>
+  <span style="margin-left:auto;font-size:12px;color:#bbb;">
+    ícones AWS oficiais (stencils mxgraph.aws4)
+  </span>
+</header>
+<div class="wrap">
+  <div class="legend">
+    <strong>Navegação:</strong> abas inferiores do viewer para trocar de página &nbsp;|&nbsp;
+    <strong>Arquivo:</strong> <code>efs-s3-architectures.drawio</code>
+  </div>
+  <div class="mxgraph" id="diag">carregando…</div>
+</div>
+
+<script>
+// O viewer-static.min.js ja inclui os shapes AWS4 (mxgraph.aws4.*) - eles
+// sao carregados automaticamente quando o stylesheet referencia
+// shape=mxgraph.aws4.resourceIcon. Nao precisamos carregar nada separado.
+async function boot() {
+  const resp = await fetch('./efs-s3-architectures.drawio?t=' + Date.now());
+  if (!resp.ok) {
+    document.getElementById('diag').innerHTML =
+      '<p style="padding:20px;color:#c00;">Falha ao carregar o .drawio. ' +
+      'Se aberto via <code>file://</code> com CORS bloqueado, rode: ' +
+      '<code>cd diagrams && python3 -m http.server 8765</code></p>';
+    return;
+  }
+  const xml = await resp.text();
+  const div = document.getElementById('diag');
+  div.innerHTML = ''; // limpa "carregando…"
+  div.setAttribute('data-mxgraph', JSON.stringify({
+    xml: xml,
+    editable: false,
+    highlight: "#0000ff",
+    nav: true,
+    toolbar: "pages zoom layers tags lightbox",
+    "toolbar-buttons": { edit: null },
+    "toolbar-nohide": true,
+    layers: true,
+    "page-visible": 1,
+    "page-id": 0,
+    pages: true,
+    zoom: 1,
+    center: true,
+    resize: true,
+    "max-height": window.innerHeight - 100
+  }));
+  // Carrega o viewer-static (ele registra os shapes mxgraph.aws4.*)
+  const s = document.createElement('script');
+  s.src = 'https://viewer.diagrams.net/js/viewer-static.min.js?v=1';
+  s.async = true;
+  document.body.appendChild(s);
+}
+boot();
+</script>
+</body>
+</html>

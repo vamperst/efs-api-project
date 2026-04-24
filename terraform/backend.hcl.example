@@ -1,0 +1,16 @@
+# Template para backend.hcl - copie este arquivo para cada stack:
+#   cp backend.hcl.example 01-vpc/backend.hcl
+#   cp backend.hcl.example 02-efs/backend.hcl
+#   cp backend.hcl.example 03-ecs/backend.hcl
+#   cp backend.hcl.example 04-ec2-populator/backend.hcl
+#
+# Depois preencha <BUCKET> e <TABLE> com os outputs da stack 00-backend:
+#   cd 00-backend && terraform output state_bucket lock_table
+#
+# Ou use o script helper:
+#   ./write-backend-hcl.sh
+
+bucket         = "<BUCKET>"
+dynamodb_table = "<TABLE>"
+region         = "us-east-1"
+encrypt        = true

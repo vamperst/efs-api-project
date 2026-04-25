@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Pre-commit hook unico do projeto.
+#   1) bloqueia arquivos proibidos (.env, backend.hcl, tfstate, etc)
+#   2) roda git-secrets (AWS keys, account id, SSO URLs, ARNs, bucket names...)
+#   3) terraform fmt check
+#
+# Instalar: make install-hooks
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+# --- 0) bloqueia arquivos proibidos que sejam staged ---------------------------
+FORBIDDEN=(
+  "\.env$"
+  "\.env\.[^.]+$"
+  "/backend\.hcl$"
+  "\.tfstate$"
+  "\.tfstate\.backup$"
+  "terraform\.tfvars$"
+  "\.pem$"
+  "\.key$"
+  "\.p12$"
+  "\.pfx$"
+  "\.aws/credentials"
+  "secrets\.(json|ya?ml)$"
+)
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+bad=""
+for pat in "${FORBIDDEN[@]}"; do
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    # whitelist de arquivos .example
+    case "$f" in
+      *.env.example|*backend.hcl.example|*.tfvars.example) continue ;;
+    esac
+    bad="$bad  - $f (padrao: $pat)"$'\n'
+  done < <(echo "$staged" | grep -E "$pat" || true)
+done
+if [ -n "$bad" ]; then
+  echo "pre-commit: arquivos proibidos no commit:"
+  printf '%s' "$bad"
+  echo "solte com:  git restore --staged <arquivo>"
+  exit 1
+fi
+
+# --- 1) terraform fmt check --------------------------------------------------
+if echo "$staged" | grep -qE "\.tf$"; then
+  if command -v terraform >/dev/null 2>&1; then
+    for d in terraform/*/; do
+      if ! (cd "$d" && terraform fmt -check -recursive >/dev/null 2>&1); then
+        echo "pre-commit: terraform fmt pendente em $d"
+        echo "rode: make fmt"
+        exit 1
+      fi
+    done
+  fi
+fi
+
+echo "pre-commit: ok (arquivos proibidos + fmt)"

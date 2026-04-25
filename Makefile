@@ -7,7 +7,8 @@ PY     := /usr/local/bin/python3.13
 
 .DEFAULT_GOAL := help
 .PHONY: help fmt validate check checkov refs preflight \
-        build-api diagrams view view-stop clean-diagrams
+        build-api diagrams view view-stop clean-diagrams \
+        install-hooks check-secrets scan-history
 
 help: ## Lista os alvos disponiveis
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -51,3 +52,21 @@ view-stop: ## Para o servidor do viewer
 clean-diagrams: ## Remove artefatos gerados pelos diagramas
 	@rm -f diagrams/*.drawio.bak
 	@rm -rf diagrams/.drawio-backup
+
+# --- seguranca -----------------------------------------------------------
+install-hooks: ## Instala git-secrets com patterns extras + pre-commit do projeto
+	@hooks/setup-git-secrets.sh
+	@# git-secrets sobrescreveu .git/hooks/pre-commit - renomear e encadear
+	@if [ -f .git/hooks/pre-commit ] && ! grep -q "pre-commit-project" .git/hooks/pre-commit 2>/dev/null; then \
+		mv .git/hooks/pre-commit .git/hooks/pre-commit.git-secrets; \
+	fi
+	@cp hooks/pre-commit .git/hooks/pre-commit-project
+	@printf '#!/bin/sh\n.git/hooks/pre-commit.git-secrets "$$@" || exit 1\n.git/hooks/pre-commit-project "$$@" || exit 1\n' > .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit .git/hooks/pre-commit-project .git/hooks/pre-commit.git-secrets
+	@echo "ok · hooks instalados (git-secrets + pre-commit do projeto)"
+
+check-secrets: ## Escaneia repo inteiro com git-secrets
+	@git secrets --scan
+
+scan-history: ## Escaneia TODA a historia do git (pode demorar)
+	@git secrets --scan-history

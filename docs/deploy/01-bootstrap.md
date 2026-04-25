@@ -63,13 +63,24 @@ make check-secrets   # confirma que o repo atual está limpo
 
 ```bash
 cp .env.example .env
-# edite .env preenchendo AWS_PROFILE com seu profile real
 ```
+
+**Edite `.env`** trocando `AWS_PROFILE=SEU_PROFILE_AQUI` pelo nome real do
+seu profile SSO. Exemplo:
+
+```ini
+AWS_PROFILE=meu-profile-sso
+```
+
+> ⚠️ **Não use `<...>` no valor** — em arquivos `.env` os caracteres `<` e `>`
+> são operadores de redirect do shell; `source .env` vai falhar com
+> `parse error near '\n'`.
 
 Carregue no shell:
 
 ```bash
 set -a; source .env; set +a
+echo "profile = $AWS_PROFILE"   # confirme que aparece o valor certo
 ```
 
 ---

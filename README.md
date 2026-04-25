@@ -42,29 +42,32 @@ efs-api-project/
 
 ## Arquitetura
 
-```
-                       Internet
-                          │
-                       ┌──┴──┐
-                       │ ALB │  (subnets públicas)
-                       └──┬──┘
-                          │
-                ┌─────────┼─────────┐
-                │         │         │
-             ┌──┴───┐  ┌──┴───┐  ┌──┴───┐
-             │ ECS  │  │ ECS  │  │ ECS  │  (Fargate, subnets privadas)
-             │ task │  │ task │  │ task │
-             └──┬───┘  └──┬───┘  └──┬───┘
-                │         │         │
-                └─────────┼─────────┘
-                          │  NFS/2049 + TLS + IAM auth
-                       ┌──┴──┐
-                       │ EFS │  (mount targets em todas subnets privadas)
-                       └──┬──┘
-                          │
-                       ┌──┴──┐
-                       │ EC2 │  (populator - acesso SSM, sem SSH)
-                       └─────┘
+Visão rápida da Fase 1 (ECS Fargate + EFS). Os 5 diagramas completos (3 fases +
+populator + migrator) estão em [diagrams/architectures.md](diagrams/architectures.md).
+
+```mermaid
+flowchart TB
+  USER([Internet · Usuários]) --> ALB[ALB<br/>subnets públicas]
+
+  subgraph PRIV["Subnets privadas · 3 AZs"]
+    direction LR
+    T1[ECS task 1<br/>api + ADOT]
+    T2[ECS task 2<br/>api + ADOT]
+    T3[ECS task 3<br/>api + ADOT]
+  end
+
+  ALB --> T1
+  ALB --> T2
+  ALB --> T3
+
+  T1 -- NFS 2049 · TLS · IAM --> EFS[(EFS<br/>access point /data)]
+  T2 --> EFS
+  T3 --> EFS
+
+  POP[EC2 populator<br/>acesso via SSM] --> EFS
+
+  classDef priv fill:#E8F5E9,stroke:#2E7D32,color:#263238
+  class PRIV priv
 ```
 
 **Princípios:**

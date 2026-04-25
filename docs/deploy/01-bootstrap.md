@@ -18,12 +18,13 @@ publicados por essas três, então elas **precisam rodar nessa ordem**.
 
 ```bash
 # Validar o que ja existe (nenhum erro = ok)
-command -v terraform && terraform -version | head -1
-command -v aws        && aws --version
-command -v docker     && docker info >/dev/null && echo "docker rodando"
-command -v checkov    && checkov --version
-command -v jq         && jq --version
-command -v git-secrets && git-secrets --version 2>&1 | head -1
+terraform -version | head -1
+aws --version
+docker info >/dev/null 2>&1 && echo "docker rodando"
+checkov --version
+jq --version
+# git-secrets nao tem --version; basta confirmar o binario
+command -v git-secrets && echo "git-secrets instalado"
 ```
 
 Se faltar algo no macOS:

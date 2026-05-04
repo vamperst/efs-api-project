@@ -170,6 +170,12 @@ report/report-*.raw.json
 report/*.csv
 
 # =============================================================================
+# Metricas brutas coletadas para blog post / materiais (contem IDs e dados
+# especificos da conta usada no teste; regere quando precisar)
+# =============================================================================
+blog-metrics/
+
+# =============================================================================
 # Diagramas — gerados / backup / exports
 # =============================================================================
 diagrams/*.drawio.bak

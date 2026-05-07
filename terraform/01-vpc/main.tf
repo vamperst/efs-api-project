@@ -59,9 +59,9 @@ resource "aws_subnet" "private" {
   })
 }
 
-# NAT Gateways (1 por AZ, HA)
+# NAT Gateways (var.nat_count: 1=barato/sem-HA, length(azs)=HA por AZ)
 resource "aws_eip" "nat" {
-  count      = length(local.azs)
+  count      = var.nat_count
   domain     = "vpc"
   depends_on = [aws_internet_gateway.igw]
 
@@ -71,7 +71,7 @@ resource "aws_eip" "nat" {
 }
 
 resource "aws_nat_gateway" "this" {
-  count         = length(local.azs)
+  count         = var.nat_count
   allocation_id = aws_eip.nat[count.index].id
   subnet_id     = aws_subnet.public[count.index].id
 
@@ -106,13 +106,16 @@ resource "aws_route_table" "private" {
   count  = length(local.azs)
   vpc_id = aws_vpc.this.id
 
+  # Se houver menos NATs que AZs, distribui round-robin (com 1 NAT, todas
+  # apontam pro NAT unico). Com NAT por AZ, cada RT usa o NAT da sua AZ.
   route {
     cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.this[count.index].id
+    nat_gateway_id = aws_nat_gateway.this[count.index % var.nat_count].id
   }
 
   tags = merge(local.common_tags, {
     Name = "${var.project}-private-rt-${local.azs[count.index]}"
+    Tier = "Private"
   })
 }
 

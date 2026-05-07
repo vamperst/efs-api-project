@@ -24,3 +24,11 @@ variable "subnet_scale" {
   type    = number
   default = 6
 }
+
+# NATs - default 1 (mais barato e dentro do limite default de EIPs=5).
+# Para HA por AZ, use length(azs) ou ajuste para o quanto quiser.
+# Com 1 NAT, todas as subnets privadas roteiam via ele (perde HA se AZ cair).
+variable "nat_count" {
+  type    = number
+  default = 1
+}

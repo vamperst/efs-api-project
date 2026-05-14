@@ -1,6 +1,7 @@
 output "ecr_repository_url" {
   value       = local.ecr_repository_url
   description = "URL do ECR (criado pela stack 03-efs, lido via SSM)"
+  sensitive   = true
 }
 
 output "alb_dns_name" {

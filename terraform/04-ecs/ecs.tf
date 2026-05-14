@@ -61,6 +61,8 @@ resource "aws_ecs_task_definition" "api" {
         { name = "OTEL_RESOURCE_ATTRIBUTES", value = "service.name=${var.project}-api,deployment.environment=${var.env},efs_s3_bench.variant=efs" },
         { name = "AWS_EMF_ENVIRONMENT", value = "Local" },
         { name = "AWS_EMF_NAMESPACE", value = local.metric_namespace },
+        { name = "MAX_CONCURRENT_BENCHES", value = "30" },
+        { name = "BENCH_QUEUE_URL", value = local.sqs_bench_url },
       ]
 
       dependsOn = [{
@@ -95,7 +97,54 @@ resource "aws_ecs_task_definition" "api" {
       name      = "adot"
       image     = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
       essential = true
-      command   = ["--config=/etc/ecs/ecs-default-config.yaml"]
+      # Carrega a config da env AOT_CONFIG_CONTENT (envsubst $AOT_CONFIG_CONTENT)
+      command = ["--config=env:AOT_CONFIG_CONTENT"]
+
+      environment = [
+        {
+          name = "AOT_CONFIG_CONTENT"
+          # indexed_attributes transforma span attributes em X-Ray Annotations
+          # (filtraveis no console/service map).
+          value = <<-YAML
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                    endpoint: 0.0.0.0:4317
+                  http:
+                    endpoint: 0.0.0.0:4318
+
+            processors:
+              batch/traces:
+                timeout: 1s
+                send_batch_size: 50
+              batch/metrics:
+                timeout: 60s
+
+            exporters:
+              awsxray:
+                region: ${var.aws_region}
+                indexed_attributes: [variant, bench_id, kind, op, size_bucket]
+              awsemf:
+                region: ${var.aws_region}
+                namespace: ${local.metric_namespace}
+                dimension_rollup_option: NoDimensionRollup
+              debug:
+                verbosity: normal
+
+            service:
+              pipelines:
+                traces:
+                  receivers: [otlp]
+                  processors: [batch/traces]
+                  exporters: [awsxray]
+                metrics:
+                  receivers: [otlp]
+                  processors: [batch/metrics]
+                  exporters: [awsemf, debug]
+          YAML
+        },
+      ]
 
       portMappings = [
         { containerPort = 4317, protocol = "tcp" },

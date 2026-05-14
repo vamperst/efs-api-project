@@ -68,6 +68,12 @@ resource "aws_iam_role_policy_attachment" "task_xray" {
   policy_arn = local.policy_xray_arn
 }
 
+# SQS (dispatch + consumer)
+resource "aws_iam_role_policy_attachment" "task_bench_sqs" {
+  role       = aws_iam_role.task.name
+  policy_arn = local.policy_bench_sqs_arn
+}
+
 # Execution role tambem precisa da cw_metrics (para o sidecar ADOT publicar)
 resource "aws_iam_role_policy_attachment" "exec_cw" {
   role       = aws_iam_role.task_execution.name

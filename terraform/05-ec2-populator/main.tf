@@ -48,7 +48,8 @@ locals {
 
     echo "==> atualizando pacotes base"
     dnf makecache -y || true
-    dnf install -y amazon-efs-utils python3 python3-pip unzip curl
+    # AL2023 vem com curl-minimal; NAO instalar 'curl' (conflita com curl-minimal)
+    dnf install -y --allowerasing amazon-efs-utils python3 python3-pip unzip
 
     echo "==> garantindo amazon-ssm-agent instalado e atualizado"
     # AL2023 ja traz o agente. Garantimos que existe e esta na ultima versao.

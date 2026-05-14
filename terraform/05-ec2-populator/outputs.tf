@@ -11,11 +11,13 @@ output "ssm_connect_command" {
 }
 
 output "efs_id" {
-  value = local.efs_file_system_id
+  value     = local.efs_file_system_id
+  sensitive = true
 }
 
 output "efs_access_point_id" {
-  value = local.efs_ap_id
+  value     = local.efs_ap_id
+  sensitive = true
 }
 
 output "target_data_size_gb" {

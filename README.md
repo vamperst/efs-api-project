@@ -86,6 +86,16 @@ flowchart TB
 
 ## Deploy — passo-a-passo
 
+> **Tutoriais detalhados por parte** em [`docs/deploy/`](docs/deploy/README.md):
+>
+> - [Parte 1 · Bootstrap (backend + VPC + observabilidade)](docs/deploy/01-bootstrap.md)
+> - Parte 2 · EFS + Populator + ECS Fargate *(em breve)*
+> - Parte 3 · S3 Files + Migrator + ECS EC2 *(em breve)*
+> - Parte 4 · Benchmarks + relatório HTML *(em breve)*
+
+O que segue abaixo é o guia rápido (sem explicações). Se for seu primeiro
+deploy, use os tutoriais por parte.
+
 > Todas as stacks compartilham as mesmas variáveis `project` e `env`. Se mudar
 > uma, mude em todas (ou passe via `-var` em cada apply).
 

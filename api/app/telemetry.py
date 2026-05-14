@@ -67,12 +67,27 @@ def _add_common(_logger: Any, _method: str, event_dict: dict) -> dict:
     return event_dict
 
 
+class _HealthCheckFilter(logging.Filter):
+    """Suprime linhas de access log do uvicorn para /health.
+
+    A ALB bate /health a cada 15s. Em regime 24/7 sao ~5800 linhas/dia/task
+    que so geram barulho em CW Logs sem valor diagnostico (o /health em si
+    tem metrica dedicada e aparece no target group do ALB).
+    """
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return "/health" not in msg
+
+
 def init_logging() -> None:
     logging.basicConfig(
         format="%(message)s",
         stream=sys.stdout,
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     )
+    # Filtrar /health apenas no access log; logs de erro do uvicorn continuam
+    logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -110,16 +125,129 @@ def init_tracing() -> None:
     })
 
     provider = TracerProvider(resource=resource)
-    # OTLP gRPC -> sidecar ADOT em :4317 (insecure porque e localhost)
+    # OTLP gRPC -> sidecar ADOT em :4317 (insecure porque e localhost).
+    # BatchSpanProcessor com parametros agressivos: queue grande + flush rapido,
+    # porque cada bench gera dezenas de spans (file.read/write individuais) e
+    # nao podemos perder nada no rolling deploy.
     provider.add_span_processor(
         BatchSpanProcessor(
-            OTLPSpanExporter(endpoint=OTEL_ENDPOINT, insecure=True)
+            OTLPSpanExporter(endpoint=OTEL_ENDPOINT, insecure=True),
+            max_queue_size=8192,
+            max_export_batch_size=512,
+            schedule_delay_millis=1000,
+            export_timeout_millis=10000,
         )
     )
     trace.set_tracer_provider(provider)
     _tracer_provider = provider
 
     LoggingInstrumentor().instrument(set_logging_format=False)
+    # auto-instrument botocore (boto3) -> spans automaticos para SQS, S3, etc.
+    # Com context propagation: ao SendMessage o trace_id atual eh injetado
+    # em MessageAttributes (AWSTraceHeader); no ReceiveMessage o consumer
+    # extrai e continua o mesmo trace. Isso conecta ALB -> API -> SQS
+    # -> Consumer -> S3 num so trace end-to-end.
+    try:
+        from opentelemetry.instrumentation.botocore import BotocoreInstrumentor
+        BotocoreInstrumentor().instrument()
+    except ImportError:
+        log.warning("otel.botocore.not_installed")
+
+    # Use X-Ray propagator para o trace context viajar via AWSTraceHeader
+    # (formato que SQS/X-Ray entendem nativamente).
+    try:
+        from opentelemetry.propagate import set_global_textmap
+        from opentelemetry.propagators.aws import AwsXRayPropagator
+        set_global_textmap(AwsXRayPropagator())
+    except ImportError:
+        log.warning("otel.xray_propagator.not_installed")
+
+    # IdGenerator X-Ray: OTel usa trace IDs de 16 bytes por default; X-Ray
+    # precisa do formato especifico (1-timestamp-random). Sem isso, os
+    # trace IDs gerados pela app nao aparecem no console do X-Ray.
+    try:
+        from opentelemetry.sdk.extension.aws.trace import AwsXRayIdGenerator
+        # recriar o provider com o id_generator correto
+        provider_xray = TracerProvider(
+            resource=resource,
+            id_generator=AwsXRayIdGenerator(),
+        )
+        provider_xray.add_span_processor(
+            BatchSpanProcessor(
+                OTLPSpanExporter(endpoint=OTEL_ENDPOINT, insecure=True),
+                max_queue_size=8192,
+                max_export_batch_size=512,
+                schedule_delay_millis=1000,
+                export_timeout_millis=10000,
+            )
+        )
+        trace.set_tracer_provider(provider_xray)
+        _tracer_provider = provider_xray
+    except ImportError:
+        log.warning("otel.xray_id_generator.not_installed")
+
+
+def flush_traces() -> None:
+    """Forca flush dos spans pendentes. Chamar ao final do bench para garantir
+    que nada se perca se a task for reciclada logo em seguida."""
+    global _tracer_provider
+    if _tracer_provider is not None:
+        _tracer_provider.force_flush(timeout_millis=10000)
+
+
+# ------------------------- X-Ray annotations --------------------------------
+# OTel -> X-Ray (via ADOT collector). Para um span.attribute virar uma
+# Annotation indexavel no X-Ray (filtravel no console, service map, queries),
+# o awsxray exporter do collector precisa ter o nome do attribute em
+# `indexed_attributes`. A config customizada do sidecar (AOT_CONFIG_CONTENT)
+# indexa: variant, bench_id, kind, op, size_bucket.
+#
+# Attributes fora dessa lista viram Metadata (visiveis no trace mas nao
+# filtraveis via console).
+INDEXED_KEYS = ("variant", "bench_id", "kind", "op", "size_bucket")
+
+
+def annotate(**kv: Any) -> None:
+    """Seta attributes no span corrente. Os listados em INDEXED_KEYS viram
+    X-Ray Annotations (filtraveis); os demais viram Metadata."""
+    span = trace.get_current_span()
+    if span is None or not span.is_recording():
+        return
+    for k, v in kv.items():
+        if v is None:
+            continue
+        span.set_attribute(k, str(v))
+
+
+@contextmanager
+def tracer_span(name: str, **attrs: Any) -> Iterator[Any]:
+    """Cria um span com attributes que viram annotations indexaveis no X-Ray
+    quando batem com INDEXED_KEYS. Ja injeta `variant` automaticamente."""
+    full = {"variant": VARIANT}
+    full.update({k: str(v) for k, v in attrs.items() if v is not None})
+    span = tracer().start_span(name, attributes=full)
+    try:
+        with trace.use_span(span, end_on_exit=False):
+            yield span
+    except Exception as e:
+        span.record_exception(e)
+        span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+        raise
+    finally:
+        span.end()
+
+
+# ------------------------- size bucketing -----------------------------------
+# Dimensao de metrica usada para separar workloads por tamanho de arquivo.
+# Buckets fixos (nao muda com dados) para que as series sejam comparaveis
+# entre corridas: small (<= 5 MB), medium (<=100 MB), large (> 100 MB).
+def size_bucket(size_bytes: int) -> str:
+    mb = size_bytes / (1024 * 1024)
+    if mb <= 5:
+        return "small"
+    if mb <= 100:
+        return "medium"
+    return "large"
 
 
 def instrument_fastapi(app: Any) -> None:
@@ -184,14 +312,18 @@ class Metrics:
 def timed(op: str, **extra: Any) -> Iterator[dict[str, Any]]:
     """
     Mede duracao, loga start/finish estruturado e cria span OTel.
+    Os attributes em INDEXED_KEYS viram X-Ray Annotations filtraveis.
+
     Uso:
-        with timed("write_file", path=p) as t:
+        with timed("write_file", path=p, size_bucket="large") as t:
             ...
-        t["duration_ms"]  # disponivel depois
+        t["duration_ms"]
     """
     t0 = time.perf_counter()
     ctx: dict[str, Any] = {"op": op, **extra}
-    span = tracer().start_span(op, attributes={"variant": VARIANT, **{k: str(v) for k, v in extra.items()}})
+    attrs = {"variant": VARIANT, "op": op}
+    attrs.update({k: str(v) for k, v in extra.items() if v is not None})
+    span = tracer().start_span(op, attributes=attrs)
     log.info("op.start", **ctx)
     try:
         with trace.use_span(span, end_on_exit=False):

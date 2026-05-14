@@ -21,7 +21,7 @@ variable "api_image_tag" {
 
 variable "api_desired_count" {
   type    = number
-  default = 1
+  default = 10
 }
 
 variable "api_cpu" {

@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+#
+# Wrapper que roda terraform em container (hashicorp/terraform oficial,
+# multi-arch ARM64/AMD64 nativo). Injeta credenciais AWS temporarias a
+# partir do profile SSO configurado.
+#
+# Uso (do DIRETORIO da stack que quer rodar):
+#   /path/para/scripts/tf init -backend-config=backend.hcl
+#   /path/para/scripts/tf plan
+#   /path/para/scripts/tf apply
+#
+# Variaveis usadas:
+#   AWS_PROFILE  (obrigatorio)  profile SSO - faz export-credentials
+#   AWS_REGION   (opcional)     default us-east-1
+#   TF_VERSION   (opcional)     default 1.14.4
+#
+set -euo pipefail
+
+TF_VERSION="${TF_VERSION:-1.14.4}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
+PROFILE="${AWS_PROFILE:-}"
+
+if [ -z "$PROFILE" ]; then
+  echo "ERRO: export AWS_PROFILE=<seu-profile-sso> antes de rodar"
+  exit 2
+fi
+
+if ! command -v aws >/dev/null 2>&1; then
+  echo "ERRO: aws cli nao encontrado"; exit 2
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  echo "ERRO: docker daemon nao esta rodando"; exit 2
+fi
+
+# Exporta credenciais temporarias (SSO -> keys + session token)
+CRED_ENV=$(aws configure export-credentials --profile "$PROFILE" --format env-no-export 2>/dev/null)
+if [ -z "$CRED_ENV" ]; then
+  echo "ERRO: falha ao exportar credenciais. Tente: aws sso login --profile $PROFILE"
+  exit 3
+fi
+
+# Transforma em flags --env para docker (sem vazar no ps)
+CRED_FLAGS=()
+while IFS='=' read -r k v; do
+  [ -z "$k" ] && continue
+  CRED_FLAGS+=(--env "$k=$v")
+done <<< "$CRED_ENV"
+CRED_FLAGS+=(--env "AWS_REGION=$AWS_REGION")
+CRED_FLAGS+=(--env "AWS_DEFAULT_REGION=$AWS_REGION")
+
+PWD_HOST="$(pwd)"
+
+# -it so funciona se o shell chamador tem TTY (caso contrario docker falha)
+TTY_FLAGS=""
+if [ -t 0 ] && [ -t 1 ]; then
+  TTY_FLAGS="-it"
+fi
+
+docker run --rm \
+  --platform linux/arm64 \
+  $TTY_FLAGS \
+  "${CRED_FLAGS[@]}" \
+  -v "$PWD_HOST:/workspace" \
+  -w /workspace \
+  "hashicorp/terraform:$TF_VERSION" \
+  "$@"

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,7 @@ from app.telemetry import (
     instrument_fastapi,
     log,
     timed,
+    tracer_span,
 )
 
 EFS_ROOT = Path(os.environ.get("EFS_MOUNT_PATH", "/mnt/efs"))
@@ -57,6 +58,13 @@ app = FastAPI(
     version=os.environ.get("API_VERSION", "1.1.0"),
 )
 instrument_fastapi(app)
+
+
+# ---------- SQS consumer (1 thread por task, inicializa no startup) ---------
+@app.on_event("startup")
+def _spawn_sqs_consumer() -> None:
+    from app.consumer import start_consumer
+    start_consumer()
 
 
 # ------------------------------- models --------------------------------------
@@ -326,12 +334,13 @@ def download_upload(filename: str) -> FileResponse:
     return FileResponse(path, filename=filename)
 
 
-@app.delete("/uploads/{filename}", status_code=204)
-def delete_upload(filename: str) -> None:
+@app.delete("/uploads/{filename}", status_code=204, response_class=Response)
+def delete_upload(filename: str) -> Response:
     path = _ensure_in_efs(UPLOADS_DIR / filename)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="arquivo nao encontrado")
     path.unlink()
+    return Response(status_code=204)
 
 
 # --------------------------- BENCHMARKS --------------------------------------
@@ -382,36 +391,39 @@ def bench_write(body: BenchWriteIn, bg: BackgroundTasks) -> BenchAck:
             min_b = body.min_mb * (1024**2)
             max_b = body.max_mb * (1024**2)
 
-            t_start = time.perf_counter()
-            while res.total_bytes < target_bytes:
-                remaining = target_bytes - res.total_bytes
-                size = random.randint(min_b, max_b)
-                if size > remaining:
-                    size = max(min_b, remaining)
-                fn = dest / f"file-{res.files_processed:06d}.bin"
-                t0 = time.perf_counter()
-                b._write_file(fn, size)
-                latency_ms = (time.perf_counter() - t0) * 1000
-                res.files_processed += 1
-                res.total_bytes += size
-                res.latencies_ms.append(latency_ms)
-                from app.telemetry import Metrics
+            from app.telemetry import Metrics, annotate, size_bucket
+            # span pai do bench: bench_id/kind/variant viram annotations filtraveis no X-Ray
+            with tracer_span("bench.write", bench_id=bench_id, kind="write", variant=VARIANT):
+                t_start = time.perf_counter()
+                while res.total_bytes < target_bytes:
+                    remaining = target_bytes - res.total_bytes
+                    size = random.randint(min_b, max_b)
+                    if size > remaining:
+                        size = max(min_b, remaining)
+                    fn = dest / f"file-{res.files_processed:06d}.bin"
+                    bucket = size_bucket(size)
+                    t0 = time.perf_counter()
+                    with tracer_span("file.write", bench_id=bench_id, size_bucket=bucket):
+                        b._write_file(fn, size)
+                    latency_ms = (time.perf_counter() - t0) * 1000
+                    res.files_processed += 1
+                    res.total_bytes += size
+                    res.latencies_ms.append(latency_ms)
+                    with Metrics(op="write", size_bucket=bucket) as m:
+                        m.put("FileOpLatencyMs", latency_ms, "Milliseconds")
+                        m.put("FileOpBytes", size, "Bytes")
+                        m.prop("bench_id", bench_id)
+                res.duration_s = round(time.perf_counter() - t_start, 3)
+                res.throughput_mb_per_s = round((res.total_bytes / (1024**2)) / max(res.duration_s, 0.001), 2)
+                res.status = "completed"
+                res.finished_at = b._now_iso()
                 with Metrics(op="write") as m:
-                    m.put("FileOpLatencyMs", latency_ms, "Milliseconds")
-                    m.put("FileOpBytes", size, "Bytes")
+                    m.put("BenchWriteThroughputMBps", res.throughput_mb_per_s, "Megabytes/Second")
+                    m.put("BenchFiles", res.files_processed, "Count")
+                    m.put("BenchBytes", res.total_bytes, "Bytes")
                     m.prop("bench_id", bench_id)
-            res.duration_s = round(time.perf_counter() - t_start, 3)
-            res.throughput_mb_per_s = round((res.total_bytes / (1024**2)) / max(res.duration_s, 0.001), 2)
-            res.status = "completed"
-            res.finished_at = b._now_iso()
-            from app.telemetry import Metrics as M2
-            with M2(op="write") as m:
-                m.put("BenchWriteThroughputMBps", res.throughput_mb_per_s, "Megabytes/Second")
-                m.put("BenchFiles", res.files_processed, "Count")
-                m.put("BenchBytes", res.total_bytes, "Bytes")
-                m.prop("bench_id", bench_id)
-                m.prop("duration_s", res.duration_s)
-            log.info("bench.write.done", **res.summary())
+                    m.prop("duration_s", res.duration_s)
+                log.info("bench.write.done", **res.summary())
         except Exception as e:
             res.status = "failed"
             res.error = str(e)
@@ -459,7 +471,7 @@ def bench_read(body: BenchReadIn, bg: BackgroundTasks) -> BenchAck:
         res = b._runs[bench_id]
         try:
             import time
-            from app.telemetry import Metrics
+            from app.telemetry import Metrics, size_bucket
             root = EFS_ROOT / body.subpath if body.subpath else EFS_ROOT
             # defense in depth
             _ensure_in_efs(root)
@@ -467,33 +479,42 @@ def bench_read(body: BenchReadIn, bg: BackgroundTasks) -> BenchAck:
                 raise FileNotFoundError(f"path nao existe: {root}")
             target_bytes = int((body.target_gb or 0) * (1024**3))
 
-            t_start = time.perf_counter()
-            for path in b._walk(root):
-                t0 = time.perf_counter()
-                size = b._read_file(path)
-                latency_ms = (time.perf_counter() - t0) * 1000
-                res.files_processed += 1
-                res.total_bytes += size
-                res.latencies_ms.append(latency_ms)
+            with tracer_span("bench.read", bench_id=bench_id, kind="read", variant=VARIANT):
+                t_start = time.perf_counter()
+                for path in b._walk(root):
+                    # size_bucket soh eh conhecido depois do stat; para o span
+                    # cobrir a leitura, usamos size do stat antes de ler.
+                    try:
+                        stat_size = path.stat().st_size
+                    except OSError:
+                        continue
+                    bucket = size_bucket(stat_size)
+                    t0 = time.perf_counter()
+                    with tracer_span("file.read", bench_id=bench_id, size_bucket=bucket):
+                        size = b._read_file(path)
+                    latency_ms = (time.perf_counter() - t0) * 1000
+                    res.files_processed += 1
+                    res.total_bytes += size
+                    res.latencies_ms.append(latency_ms)
+                    with Metrics(op="read", size_bucket=bucket) as m:
+                        m.put("FileOpLatencyMs", latency_ms, "Milliseconds")
+                        m.put("FileOpBytes", size, "Bytes")
+                        m.prop("bench_id", bench_id)
+                    if body.max_files and res.files_processed >= body.max_files:
+                        break
+                    if target_bytes and res.total_bytes >= target_bytes:
+                        break
+                res.duration_s = round(time.perf_counter() - t_start, 3)
+                res.throughput_mb_per_s = round((res.total_bytes / (1024**2)) / max(res.duration_s, 0.001), 2)
+                res.status = "completed"
+                res.finished_at = b._now_iso()
                 with Metrics(op="read") as m:
-                    m.put("FileOpLatencyMs", latency_ms, "Milliseconds")
-                    m.put("FileOpBytes", size, "Bytes")
+                    m.put("BenchReadThroughputMBps", res.throughput_mb_per_s, "Megabytes/Second")
+                    m.put("BenchFiles", res.files_processed, "Count")
+                    m.put("BenchBytes", res.total_bytes, "Bytes")
                     m.prop("bench_id", bench_id)
-                if body.max_files and res.files_processed >= body.max_files:
-                    break
-                if target_bytes and res.total_bytes >= target_bytes:
-                    break
-            res.duration_s = round(time.perf_counter() - t_start, 3)
-            res.throughput_mb_per_s = round((res.total_bytes / (1024**2)) / max(res.duration_s, 0.001), 2)
-            res.status = "completed"
-            res.finished_at = b._now_iso()
-            with Metrics(op="read") as m:
-                m.put("BenchReadThroughputMBps", res.throughput_mb_per_s, "Megabytes/Second")
-                m.put("BenchFiles", res.files_processed, "Count")
-                m.put("BenchBytes", res.total_bytes, "Bytes")
-                m.prop("bench_id", bench_id)
-                m.prop("duration_s", res.duration_s)
-            log.info("bench.read.done", **res.summary())
+                    m.prop("duration_s", res.duration_s)
+                log.info("bench.read.done", **res.summary())
         except Exception as e:
             res.status = "failed"
             res.error = str(e)
@@ -506,6 +527,57 @@ def bench_read(body: BenchReadIn, bg: BackgroundTasks) -> BenchAck:
     bg.add_task(_runner)
     log.info("bench.read.queued", bench_id=bench_id, **body.model_dump())
     return BenchAck(bench_id=bench_id, kind="read", variant=VARIANT)
+
+
+class BenchDispatchIn(BaseModel):
+    kind: str = Field(..., description="write ou read")
+    prefixes: list[str] = Field(..., min_length=1, max_length=1000,
+                                description="subpaths (cada um vira um job)")
+    target_gb: float = Field(..., gt=0, le=500)
+    min_mb: int = Field(50, ge=1, le=2048)
+    max_mb: int = Field(100, ge=1, le=2048)
+
+
+class BenchDispatchOut(BaseModel):
+    dispatched: int
+    bench_ids: list[str]
+    queue_url: str
+
+
+@app.post("/bench/dispatch", response_model=BenchDispatchOut)
+def bench_dispatch(body: BenchDispatchIn) -> BenchDispatchOut:
+    """Enfileira N jobs na SQS. Cada task Fargate consome 1 job por vez,
+    garantindo paralelismo real (= N tasks running)."""
+    queue_url = os.environ.get("BENCH_QUEUE_URL")
+    if not queue_url:
+        raise HTTPException(status_code=500, detail="BENCH_QUEUE_URL nao configurada")
+    if body.kind not in ("write", "read"):
+        raise HTTPException(status_code=400, detail="kind deve ser write ou read")
+
+    from app.consumer import dispatch_batch
+    jobs = []
+    for prefix in body.prefixes:
+        jobs.append({
+            "kind": body.kind,
+            "subpath": prefix,
+            "target_gb": body.target_gb,
+            "min_mb": body.min_mb,
+            "max_mb": body.max_mb,
+        })
+    # Span parent do dispatch - BotocoreInstrumentor + AwsXRayPropagator
+    # injetam AWSTraceHeader em cada SendMessage. Isso conecta este trace
+    # com os traces dos consumers via X-Ray.
+    with tracer_span(
+        "bench.dispatch",
+        kind=body.kind,
+        variant=VARIANT,
+        prefixes=len(body.prefixes),
+        target_gb=body.target_gb,
+    ):
+        bench_ids = dispatch_batch(queue_url, jobs)
+    log.info("bench.dispatch", count=len(bench_ids), kind=body.kind,
+             prefixes=len(body.prefixes), queue=queue_url)
+    return BenchDispatchOut(dispatched=len(bench_ids), bench_ids=bench_ids, queue_url=queue_url)
 
 
 @app.get("/bench")

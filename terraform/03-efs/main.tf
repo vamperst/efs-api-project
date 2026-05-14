@@ -33,8 +33,19 @@ resource "aws_security_group" "efs" {
 resource "aws_efs_file_system" "this" {
   creation_token   = "${var.project}-efs"
   performance_mode = "generalPurpose"
-  throughput_mode  = "bursting"
-  encrypted        = true
+
+  # Elastic throughput: escalona automaticamente com a demanda.
+  # Alternativa para benchmark com throughput conhecido seria "provisioned"
+  # com throughput_in_mibps (mas Elastic eh o modo recomendado pela AWS
+  # para workloads variaveis).
+  # Ref: https://docs.aws.amazon.com/efs/latest/ug/performance.html
+  # Atencao: depois de mudar para Elastic/Provisioned, a AWS impede
+  # reduzir o throughput ou mudar modo por 24h.
+  throughput_mode = var.throughput_mode
+  # provisioned_throughput_in_mibps so eh valido quando throughput_mode=provisioned
+  provisioned_throughput_in_mibps = var.throughput_mode == "provisioned" ? var.provisioned_throughput_mibps : null
+
+  encrypted = true
 
   tags = merge(local.common_tags, {
     Name = "${var.project}-efs"

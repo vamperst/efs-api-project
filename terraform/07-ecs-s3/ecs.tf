@@ -15,34 +15,24 @@ resource "aws_ecs_cluster" "this" {
   tags = local.common_tags
 }
 
-resource "aws_ecs_cluster_capacity_providers" "this" {
-  cluster_name       = aws_ecs_cluster.this.name
-  capacity_providers = [aws_ecs_capacity_provider.asg.name]
-
-  default_capacity_provider_strategy {
-    capacity_provider = aws_ecs_capacity_provider.asg.name
-    base              = 1
-    weight            = 100
-  }
-}
-
-# Task definition: EC2 launch type, network_mode bridge para permitir
-# dynamic port mapping e bindMount direto do host.
-#
-# IMPORTANTE: bindMount de /mnt/s3 (host) -> /mnt/efs (container).
-# A API nao precisa nem saber que mudou: ela continua lendo /mnt/efs.
+# Task definition Fargate + S3 Files como volume.
+# Mesma CPU/memoria/network_mode/imagem da stack 04 para comparacao justa.
 resource "aws_ecs_task_definition" "api" {
   family                   = "${var.project}-s3-api"
-  network_mode             = "bridge"
-  requires_compatibilities = ["EC2"]
+  cpu                      = var.api_cpu
+  memory                   = var.api_memory
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
   execution_role_arn       = aws_iam_role.task_execution.arn
   task_role_arn            = aws_iam_role.task.arn
-  cpu                      = "512"
-  memory                   = "1024"
 
   volume {
-    name      = "s3-data"
-    host_path = local.s3_mount_path
+    name = "s3-data"
+
+    s3files_volume_configuration {
+      file_system_arn  = aws_s3files_file_system.this.arn
+      access_point_arn = aws_s3files_access_point.this.arn
+    }
   }
 
   container_definitions = jsonencode([
@@ -50,15 +40,9 @@ resource "aws_ecs_task_definition" "api" {
       name      = "api"
       image     = "${local.ecr_repository_url}:${var.api_image_tag}"
       essential = true
-      cpu       = 512
-      memory    = 1024
-
-      # Com bridge networking + sidecar ADOT, um container ve o outro via `links`.
-      links = ["adot:adot"]
 
       portMappings = [{
         containerPort = var.api_port
-        hostPort      = 0
         protocol      = "tcp"
       }]
 
@@ -70,10 +54,12 @@ resource "aws_ecs_task_definition" "api" {
         { name = "AWS_REGION", value = var.aws_region },
         { name = "METRIC_NAMESPACE", value = local.metric_namespace },
         { name = "BENCH_RESULTS_BUCKET", value = local.results_bucket },
-        { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "http://adot:4317" },
+        { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "http://localhost:4317" },
         { name = "OTEL_RESOURCE_ATTRIBUTES", value = "service.name=${var.project}-api,deployment.environment=${var.env},efs_s3_bench.variant=s3" },
         { name = "AWS_EMF_ENVIRONMENT", value = "Local" },
         { name = "AWS_EMF_NAMESPACE", value = local.metric_namespace },
+        { name = "MAX_CONCURRENT_BENCHES", value = "30" },
+        { name = "BENCH_QUEUE_URL", value = local.sqs_bench_url },
       ]
 
       dependsOn = [{
@@ -82,8 +68,8 @@ resource "aws_ecs_task_definition" "api" {
       }]
 
       mountPoints = [{
-        sourceVolume  = "s3-data"
         containerPath = "/mnt/efs"
+        sourceVolume  = "s3-data"
         readOnly      = false
       }]
 
@@ -108,9 +94,51 @@ resource "aws_ecs_task_definition" "api" {
       name      = "adot"
       image     = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
       essential = true
-      cpu       = 128
-      memory    = 256
-      command   = ["--config=/etc/ecs/ecs-default-config.yaml"]
+      command   = ["--config=env:AOT_CONFIG_CONTENT"]
+
+      environment = [
+        {
+          name  = "AOT_CONFIG_CONTENT"
+          value = <<-YAML
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                    endpoint: 0.0.0.0:4317
+                  http:
+                    endpoint: 0.0.0.0:4318
+
+            processors:
+              batch/traces:
+                timeout: 1s
+                send_batch_size: 50
+              batch/metrics:
+                timeout: 60s
+
+            exporters:
+              awsxray:
+                region: ${var.aws_region}
+                indexed_attributes: [variant, bench_id, kind, op, size_bucket]
+              awsemf:
+                region: ${var.aws_region}
+                namespace: ${local.metric_namespace}
+                dimension_rollup_option: NoDimensionRollup
+              debug:
+                verbosity: normal
+
+            service:
+              pipelines:
+                traces:
+                  receivers: [otlp]
+                  processors: [batch/traces]
+                  exporters: [awsxray]
+                metrics:
+                  receivers: [otlp]
+                  processors: [batch/metrics]
+                  exporters: [awsemf, debug]
+          YAML
+        },
+      ]
 
       portMappings = [
         { containerPort = 4317, protocol = "tcp" },
@@ -136,11 +164,12 @@ resource "aws_ecs_service" "api" {
   cluster         = aws_ecs_cluster.this.id
   task_definition = aws_ecs_task_definition.api.arn
   desired_count   = var.api_desired_count
+  launch_type     = "FARGATE"
 
-  capacity_provider_strategy {
-    capacity_provider = aws_ecs_capacity_provider.asg.name
-    weight            = 100
-    base              = 1
+  network_configuration {
+    subnets          = local.private_subnet_ids
+    security_groups  = [aws_security_group.api.id]
+    assign_public_ip = false
   }
 
   load_balancer {
@@ -149,15 +178,11 @@ resource "aws_ecs_service" "api" {
     container_port   = var.api_port
   }
 
-  ordered_placement_strategy {
-    type  = "spread"
-    field = "attribute:ecs.availability-zone"
-  }
-
-  deployment_minimum_healthy_percent = 50
-  deployment_maximum_percent         = 200
-
-  depends_on = [aws_lb_listener.http, aws_ecs_cluster_capacity_providers.this]
+  depends_on = [
+    aws_lb_listener.http,
+    # Garantir que os mount targets estejam ready antes de subir a task.
+    aws_s3files_mount_target.this,
+  ]
 
   tags = local.common_tags
 }

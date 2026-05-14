@@ -8,16 +8,16 @@ resource "aws_lb" "api" {
   tags = merge(local.common_tags, { Name = "${var.project}-s3-alb" })
 }
 
-# target_type = "instance" porque usamos bridge networking + dynamic port mapping
 resource "aws_lb_target_group" "api" {
   name        = "${var.project}-s3-tg"
   port        = var.api_port
   protocol    = "HTTP"
-  target_type = "instance"
+  target_type = "ip"
   vpc_id      = local.vpc_id
 
   health_check {
     path                = "/health"
+    port                = tostring(var.api_port)
     healthy_threshold   = 2
     unhealthy_threshold = 3
     interval            = 15

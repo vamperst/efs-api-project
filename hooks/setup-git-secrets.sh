@@ -135,6 +135,14 @@ git secrets --add --allowed '(i|fs|vpc|sg|subnet|eni|ami|vol|snap|igw|nat|rtb|vp
 git secrets --add --allowed '\-x{3,}\.'                     || true   # elb-xxxx. / s3-xxxx.
 git secrets --add --allowed 'x{5,}'                         || true   # xxxxxx... em dominios exemplo
 
+# Os proprios arquivos que CONTEM os regexes de deteccao (scanner + setup)
+# geram falsos positivos - whitelist por prefixo de path
+git secrets --add --allowed 'hooks/setup-git-secrets\.sh'   || true
+git secrets --add --allowed 'tests/check_secrets\.py'       || true
+git secrets --add --allowed 'tests/check_refs\.py'          || true
+# o proprio .gitallowed list pode conter qualquer coisa
+git secrets --add --allowed '\.gitallowed'                  || true
+
 echo
 echo "==> listagem de padroes bloqueados"
 git secrets --list 2>&1 | sed 's/^/  /' | head -40

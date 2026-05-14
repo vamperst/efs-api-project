@@ -60,6 +60,15 @@ data "aws_ssm_parameter" "log_group_otel" {
   name = "/${var.project}/${var.env}/obs/log_group_otel"
 }
 
+# SQS (criada na stack 02)
+data "aws_ssm_parameter" "sqs_bench_efs_url" {
+  name = "/${var.project}/${var.env}/obs/sqs_bench_efs_url"
+}
+
+data "aws_ssm_parameter" "policy_bench_sqs_arn" {
+  name = "/${var.project}/${var.env}/obs/policy_bench_sqs_arn"
+}
+
 locals {
   vpc_id             = data.aws_ssm_parameter.vpc_id.value
   public_subnet_ids  = split(",", data.aws_ssm_parameter.public_subnet_ids.value)
@@ -72,9 +81,11 @@ locals {
 
   ecr_repository_url = data.aws_ssm_parameter.ecr_repository_url.value
 
-  results_bucket   = data.aws_ssm_parameter.results_bucket.value
-  metric_namespace = data.aws_ssm_parameter.metric_namespace.value
-  log_group_otel   = data.aws_ssm_parameter.log_group_otel.value
+  results_bucket       = data.aws_ssm_parameter.results_bucket.value
+  metric_namespace     = data.aws_ssm_parameter.metric_namespace.value
+  log_group_otel       = data.aws_ssm_parameter.log_group_otel.value
+  sqs_bench_url        = data.aws_ssm_parameter.sqs_bench_efs_url.value
+  policy_bench_sqs_arn = data.aws_ssm_parameter.policy_bench_sqs_arn.value
 
   policy_bench_results_arn = data.aws_ssm_parameter.policy_bench_results_arn.value
   policy_cw_emf_arn        = data.aws_ssm_parameter.policy_cw_emf_arn.value

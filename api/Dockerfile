@@ -13,7 +13,9 @@ RUN groupadd -g 1000 apiuser && useradd -u 1000 -g 1000 -m -s /bin/bash apiuser
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+# setuptools precisa estar antes de instalar otel (pkg_resources dependency)
+RUN pip install --upgrade "setuptools>=69.0.0" wheel && \
+    pip install -r requirements.txt
 
 COPY app ./app
 

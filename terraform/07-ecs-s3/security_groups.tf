@@ -1,10 +1,11 @@
+# SG do ALB - HTTP 80 da internet
 resource "aws_security_group" "alb" {
   name        = "${var.project}-s3-alb-sg"
   description = "ALB da API S3-backed"
   vpc_id      = local.vpc_id
 
   ingress {
-    description = "HTTP publico do ALB"
+    description = "HTTP publico"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
@@ -12,39 +13,50 @@ resource "aws_security_group" "alb" {
   }
 
   egress {
-    description = "Saida (stateful) para as EC2 do cluster"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(local.common_tags, { Name = "${var.project}-s3-alb-sg" })
+  tags = merge(local.common_tags, {
+    Name = "${var.project}-s3-alb-sg"
+  })
 }
 
-# SG das EC2 do cluster ECS. A task nao usa awsvpc aqui (usamos bridge para
-# que o bind-mount com o Mountpoint funcione facil) - entao o ALB aponta
-# diretamente para portas dinamicas na instancia.
-resource "aws_security_group" "ecs_instance" {
-  name        = "${var.project}-s3-ecs-instance-sg"
-  description = "EC2 do cluster ECS S3"
+# SG das tasks Fargate - so aceita o ALB na porta da API
+resource "aws_security_group" "api" {
+  name        = "${var.project}-s3-api-sg"
+  description = "Fargate tasks da API S3-backed"
   vpc_id      = local.vpc_id
 
   ingress {
-    description     = "ALB para portas dinamicas ECS"
-    from_port       = 32768
-    to_port         = 65535
+    description     = "ALB para API"
+    from_port       = var.api_port
+    to_port         = var.api_port
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }
 
   egress {
-    description = "Saida para S3/ECR/logs/SSM"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(local.common_tags, { Name = "${var.project}-s3-ecs-instance-sg" })
+  tags = merge(local.common_tags, {
+    Name = "${var.project}-s3-api-sg"
+  })
+}
+
+# A task Fargate precisa acessar o mount target S3 Files na porta NFS/2049.
+resource "aws_security_group_rule" "s3files_from_api" {
+  type                     = "ingress"
+  from_port                = 2049
+  to_port                  = 2049
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.s3files_mt.id
+  source_security_group_id = aws_security_group.api.id
+  description              = "NFS das tasks Fargate"
 }

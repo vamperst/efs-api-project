@@ -1,4 +1,4 @@
-data "aws_iam_policy_document" "ecs_tasks_assume" {
+data "aws_iam_policy_document" "ecs_assume" {
   statement {
     actions = ["sts:AssumeRole"]
     principals {
@@ -8,22 +8,10 @@ data "aws_iam_policy_document" "ecs_tasks_assume" {
   }
 }
 
-data "aws_iam_policy_document" "ec2_assume" {
-  statement {
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "Service"
-      identifiers = ["ec2.amazonaws.com"]
-    }
-  }
-}
-
-# -----------------------------------------------------------------------------
-# Execution role da task (puxa imagem do ECR, envia logs)
-# -----------------------------------------------------------------------------
+# Execution role - puxa imagem do ECR, manda logs
 resource "aws_iam_role" "task_execution" {
   name               = "${var.project}-s3-ecs-exec-role"
-  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+  assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
   tags               = local.common_tags
 }
 
@@ -32,69 +20,58 @@ resource "aws_iam_role_policy_attachment" "task_execution_attach" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# -----------------------------------------------------------------------------
-# Task role - a API em si nao precisa de S3 porque le/escreve via POSIX
-# (o Mountpoint e quem fala com S3). Deixamos minimo por defesa em profundidade.
-# -----------------------------------------------------------------------------
+# Task role - a task precisa montar e escrever no S3 Files + ler objetos direto
 resource "aws_iam_role" "task" {
   name               = "${var.project}-s3-ecs-task-role"
-  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+  assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
   tags               = local.common_tags
 }
 
-# -----------------------------------------------------------------------------
-# Instance role da EC2 do cluster ECS:
-#   - AmazonEC2ContainerServiceforEC2Role (registrar no cluster)
-#   - AmazonSSMManagedInstanceCore (Session Manager)
-#   - Acesso s3:* no bucket de files (para o Mountpoint montar)
-# -----------------------------------------------------------------------------
-resource "aws_iam_role" "ecs_instance" {
-  name               = "${var.project}-s3-ecs-instance-role"
-  assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
-  tags               = local.common_tags
-}
-
-resource "aws_iam_role_policy_attachment" "ecs_instance_ecs" {
-  role       = aws_iam_role.ecs_instance.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
-}
-
-resource "aws_iam_role_policy_attachment" "ecs_instance_ssm" {
-  role       = aws_iam_role.ecs_instance.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-# Permissoes para Mountpoint for S3 montar o bucket.
-# Referencia: https://github.com/awslabs/mountpoint-s3/blob/main/doc/CONFIGURATION.md
-data "aws_iam_policy_document" "mountpoint_s3" {
+# Permissoes para a task montar o filesystem S3 Files (s3files:ClientMount/Write)
+# e ler objetos direto do bucket (otimizacao).
+# Referencia: https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-files-prereq-policies.html#s3-files-prereq-iam-compute-role
+data "aws_iam_policy_document" "s3files_client" {
   statement {
-    sid       = "ListBucket"
-    actions   = ["s3:ListBucket"]
-    resources = [local.s3files_bucket_arn]
+    sid = "S3FilesMount"
+    actions = [
+      "s3files:ClientMount",
+      "s3files:ClientWrite",
+      "s3files:ClientRootAccess",
+      "s3files:DescribeMountTargets",
+    ]
+    resources = [
+      aws_s3files_file_system.this.arn,
+      aws_s3files_access_point.this.arn,
+    ]
   }
+
   statement {
-    sid = "ReadWriteObjects"
+    sid = "S3ObjectRead"
     actions = [
       "s3:GetObject",
-      "s3:PutObject",
-      "s3:DeleteObject",
-      "s3:AbortMultipartUpload",
+      "s3:GetObjectVersion",
     ]
     resources = ["${local.s3files_bucket_arn}/*"]
   }
+
+  statement {
+    sid       = "S3BucketList"
+    actions   = ["s3:ListBucket"]
+    resources = [local.s3files_bucket_arn]
+  }
 }
 
-resource "aws_iam_policy" "mountpoint_s3" {
-  name   = "${var.project}-mountpoint-s3"
-  policy = data.aws_iam_policy_document.mountpoint_s3.json
+resource "aws_iam_policy" "s3files_client" {
+  name   = "${var.project}-s3files-client"
+  policy = data.aws_iam_policy_document.s3files_client.json
 }
 
-resource "aws_iam_role_policy_attachment" "ecs_instance_s3" {
-  role       = aws_iam_role.ecs_instance.name
-  policy_arn = aws_iam_policy.mountpoint_s3.arn
+resource "aws_iam_role_policy_attachment" "task_s3files" {
+  role       = aws_iam_role.task.name
+  policy_arn = aws_iam_policy.s3files_client.arn
 }
 
-# Observability (ARNs via SSM publicado pela stack 02)
+# Observability (SSM da stack 02)
 resource "aws_iam_role_policy_attachment" "task_bench_results" {
   role       = aws_iam_role.task.name
   policy_arn = local.policy_bench_results_arn
@@ -110,18 +87,12 @@ resource "aws_iam_role_policy_attachment" "task_xray" {
   policy_arn = local.policy_xray_arn
 }
 
+resource "aws_iam_role_policy_attachment" "task_bench_sqs" {
+  role       = aws_iam_role.task.name
+  policy_arn = local.policy_bench_sqs_arn
+}
+
 resource "aws_iam_role_policy_attachment" "exec_cw" {
   role       = aws_iam_role.task_execution.name
   policy_arn = local.policy_cw_emf_arn
-}
-
-# CloudWatch Agent nas EC2 do cluster (metricas de host: EBS IOPS, NET, mem)
-resource "aws_iam_role_policy_attachment" "ecs_instance_cw_agent" {
-  role       = aws_iam_role.ecs_instance.name
-  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
-}
-
-resource "aws_iam_instance_profile" "ecs_instance" {
-  name = "${var.project}-s3-ecs-instance-profile"
-  role = aws_iam_role.ecs_instance.name
 }
